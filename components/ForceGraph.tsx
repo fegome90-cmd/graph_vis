@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useMemo, useState } from 'react';
-// Fix: Import StylesheetCSS instead of Stylesheet from cytoscape, as suggested by the error message.
-import cytoscape, { Core, EventObject, StylesheetCSS } from 'cytoscape';
+import cytoscape from 'cytoscape';
 import { NodeData, LinkData } from '../types';
 
 interface ForceGraphProps {
@@ -20,9 +19,10 @@ const nodeWidth = 160;
 const nodeHeight = 60;
 
 // --- Helper function to create SVG for nodes ---
-// This function now only creates the background, icon, and status bar, not the text label.
+// This function now only creates the background, icon, and status bar.
+// Borders and labels are handled by Cytoscape styles for better performance and consistency.
 const createNodeSvg = (node: NodeData): string => {
-    const { type, importance, isHotspot } = node;
+    const { type, importance } = node;
     const statusBarWidth = 6;
     const headerHeight = 24;
     const bodyHeight = nodeHeight - headerHeight;
@@ -42,24 +42,31 @@ const createNodeSvg = (node: NodeData): string => {
         class: 'M6.1 14.6L1.5 12l4.6-2.6L8.5 12l-2.4 2.6zm11.8 0L22.5 12l-4.6-2.6L15.5 12l2.4 2.6zm-6.4-10.2L9.4 17.2l1.2 1.2 2.1-12.8-1.2-1.2z',
     };
 
-    const hotspotIndicatorSvg = isHotspot
+    const hotspotIndicatorSvg = node.isHotspot
         ? `<circle cx="${nodeWidth - 12}" cy="12" r="5" fill="${nodeHotspotBorderColor}" stroke="#fff" stroke-width="1.5" />`
         : '';
     
+    // Using a clipPath for robust rounded corners.
     const svg = `
         <svg xmlns="http://www.w3.org/2000/svg" width="${nodeWidth}" height="${nodeHeight}">
-            <rect x="0" y="0" width="${nodeWidth}" height="${nodeHeight}" fill="${nodeBodyBgColor}" stroke="${isHotspot ? nodeHotspotBorderColor : 'none'}" stroke-width="${isHotspot ? 2 : 0}" rx="8" ry="8"/>
-            <path d="M 0 8 a 8 8 0 0 1 8 -8 h ${nodeWidth - 16} a 8 8 0 0 1 8 8 v ${headerHeight - 8} H 0 Z" fill="${nodeHeaderBgColor}" />
-            <rect x="0" y="${headerHeight}" width="${nodeWidth}" height="1" fill="${nodeBorderColor}"/>
-            <g transform="translate(8, 5)">
-                <svg viewBox="0 0 24 24" width="14" height="14" fill="#475569">
-                    <path d="${iconPath[type]}"></path>
-                </svg>
+            <defs>
+                <clipPath id="rounded-corners">
+                    <rect x="0" y="0" width="${nodeWidth}" height="${nodeHeight}" rx="8" ry="8"/>
+                </clipPath>
+            </defs>
+            <g clip-path="url(#rounded-corners)">
+                <rect x="0" y="0" width="${nodeWidth}" height="${nodeHeight}" fill="${nodeBodyBgColor}"/>
+                <rect x="0" y="0" width="${nodeWidth}" height="${headerHeight}" fill="${nodeHeaderBgColor}"/>
+                
+                <g transform="translate(8, 5)">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="#475569">
+                        <path d="${iconPath[type]}"></path>
+                    </svg>
+                </g>
+                
+                <rect x="8" y="${headerHeight + 8}" width="${statusBarWidth}" height="${statusBarHeight}" fill="#e2e8f0" rx="3" ry="3"/>
+                <rect x="8" y="${headerHeight + 8 + (statusBarHeight - statusBarFillHeight)}" width="${statusBarWidth}" height="${statusBarFillHeight}" fill="${statusBarColor}" rx="3" ry="3"/>
             </g>
-            
-            <rect x="8" y="${headerHeight + 8}" width="${statusBarWidth}" height="${statusBarHeight}" fill="#e2e8f0" rx="3" ry="3"/>
-            <rect x="8" y="${headerHeight + 8 + (statusBarHeight - statusBarFillHeight)}" width="${statusBarWidth}" height="${statusBarFillHeight}" fill="${statusBarColor}" rx="3" ry="3"/>
-
             ${hotspotIndicatorSvg}
         </svg>
     `;
@@ -67,9 +74,8 @@ const createNodeSvg = (node: NodeData): string => {
     return `data:image/svg+xml;base64,${btoa(svg)}`;
 };
 
-// A stylesheet is an array of style rules.
-// Fix: Use StylesheetCSS[] as the type for the styles array.
-const graphStyles: StylesheetCSS[] = [
+// Fix: Corrected cytoscape style type from Stylesheet to StylesheetCSS based on the error.
+const graphStyles: cytoscape.StylesheetCSS[] = [
     {
         selector: 'node',
         style: {
@@ -77,23 +83,22 @@ const graphStyles: StylesheetCSS[] = [
             'background-color': 'transparent',
             'background-image': 'data(svg)',
             'border-width': 2,
-            'border-color': 'transparent',
+            'border-color': nodeBorderColor, // Default border color
             'width': nodeWidth,
             'height': nodeHeight,
-            // Label styles
+            // Label styles - positioned carefully within the header
             'label': 'data(name)',
-            'text-valign': 'center',
-            'text-halign': 'center',
-            'text-margin-x': 11,
-            'text-margin-y': -16,
+            'text-valign': 'top',
+            'text-halign': 'left',
+            'text-margin-x': 28, // Left padding (8px) + icon width (14px) + text padding (6px)
+            'text-margin-y': 6,  // Vertical centering in header (height 24px, font 12px)
             'font-family': 'Space Grotesk, sans-serif',
             'font-size': '12px',
             'font-weight': '600',
             'color': '#1e293b',
-            'text-max-width': 110,
+            'text-max-width': 110, // Max width before truncating
             'text-overflow': 'ellipsis',
             'text-wrap': 'none',
-            // Use compatible properties for transitions
             'transition-property': 'width, height, overlay-opacity, overlay-padding, border-color',
             'transition-duration': '0.2s',
             'overlay-color': selectedNodeBorderColor,
@@ -124,10 +129,8 @@ const graphStyles: StylesheetCSS[] = [
     {
         selector: '.hovered',
         style: {
-            // Animate width and height for scaling effect
             'width': nodeWidth * 1.05,
             'height': nodeHeight * 1.05,
-            // Add a subtle glow effect
             'overlay-opacity': 0.2,
             'overlay-padding': 8,
         }
@@ -135,10 +138,8 @@ const graphStyles: StylesheetCSS[] = [
     {
         selector: '.grabbed',
         style: {
-             // Animate width and height for scaling effect
             'width': nodeWidth * 1.1,
             'height': nodeHeight * 1.1,
-            // Use overlay for a stronger glow/shadow effect
             'overlay-opacity': 0.5,
             'overlay-padding': 15,
         }
@@ -210,7 +211,7 @@ const NodeDetailsPanel: React.FC<{ node: NodeData, onClose: () => void }> = ({ n
 
 export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links, selectedNodeId, onNodeClick }) => {
     const containerRef = useRef<HTMLDivElement>(null);
-    const cyRef = useRef<Core | null>(null);
+    const cyRef = useRef<cytoscape.Core | null>(null);
     const [isLegendVisible, setIsLegendVisible] = useState(true);
     const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -231,12 +232,10 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links, selectedNo
         name: 'cose',
         animate: 'end' as const,
         padding: 100,
-        // Adjust forces for better stability and less overlap
         nodeRepulsion: () => 4000,
         idealEdgeLength: () => 180,
         nodeOverlap: 25,
         gravity: 40,
-        // Fine-tuning parameters for a smoother layout
         numIter: 1000,
         initialTemp: 200,
         coolingFactor: 0.95,
@@ -281,18 +280,18 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links, selectedNo
         const cy = cyRef.current;
         if (!cy) return;
 
-        const handleNodeTap = (evt: EventObject) => {
+        const handleNodeTap = (evt: cytoscape.EventObject) => {
             const nodeId = evt.target.id();
             const { onNodeClick: currentOnNodeClick, selectedNodeId: currentSelectedNodeId } = propsRef.current;
             currentOnNodeClick?.(currentSelectedNodeId === nodeId ? null : nodeId);
         };
-        const handleBackgroundTap = (evt: EventObject) => {
+        const handleBackgroundTap = (evt: cytoscape.EventObject) => {
             if(evt.target === cy) {
                  const { onNodeClick: currentOnNodeClick } = propsRef.current;
                  currentOnNodeClick?.(null);
             }
         };
-        const handleMouseOver = (e: EventObject) => {
+        const handleMouseOver = (e: cytoscape.EventObject) => {
             const { selectedNodeId: currentSelectedNodeId } = propsRef.current;
             if (!currentSelectedNodeId) {
                 cy.elements().addClass('faded');
@@ -300,18 +299,20 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links, selectedNo
                 e.target.neighborhood().removeClass('faded');
             }
             if (e.target.isNode()) {
-                 (cy.container() as HTMLElement).style.cursor = 'pointer';
+                 const container = cy.container();
+                 if(container) container.style.cursor = 'pointer';
             }
         };
-        const handleMouseOut = (e: EventObject) => {
+        const handleMouseOut = (e: cytoscape.EventObject) => {
             const { selectedNodeId: currentSelectedNodeId } = propsRef.current;
             if (!currentSelectedNodeId) {
                 cy.elements().removeClass('faded hovered');
             }
-            (cy.container() as HTMLElement).style.cursor = 'default';
+            const container = cy.container();
+            if(container) container.style.cursor = 'default';
         };
-        const handleGrab = (e: EventObject) => e.target.addClass('grabbed');
-        const handleFree = (e: EventObject) => e.target.removeClass('grabbed');
+        const handleGrab = (e: cytoscape.EventObject) => e.target.addClass('grabbed');
+        const handleFree = (e: cytoscape.EventObject) => e.target.removeClass('grabbed');
 
         cy.on('tap', 'node', handleNodeTap);
         cy.on('tap', handleBackgroundTap);
