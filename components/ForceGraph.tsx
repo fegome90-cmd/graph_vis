@@ -23,7 +23,7 @@ const graphStyles: cytoscape.Stylesheet[] = [
             'font-weight': 'bold',
             'text-valign': 'center',
             'text-halign': 'center',
-            'transition-property': 'transform, box-shadow, shadow-blur, shadow-opacity',
+            'transition-property': 'transform, box-shadow, shadow-blur, shadow-opacity, border-width, border-color, border-opacity',
             'transition-duration': '0.2s',
         },
     },
@@ -74,17 +74,20 @@ const graphStyles: cytoscape.Stylesheet[] = [
     {
         selector: '.hovered',
         style: {
-            'transform': 'scale(1.1)',
+            'transform': 'scale(1.15)',
+            'shadow-color': '#ffffff',
+            'shadow-opacity': 0.9,
+            'shadow-blur': 25,
         }
     },
     {
         selector: '.grabbed',
         style: {
             'shadow-color': '#135bec',
-            'shadow-opacity': 0.6,
-            'shadow-blur': 40,
+            'shadow-opacity': 0.5,
+            'shadow-blur': 30,
             'shadow-offset-y': 20,
-            'transform': 'scale(1.1)',
+            'transform': 'scale(1.2)',
             'z-index': 999,
         }
     },
@@ -181,50 +184,71 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links }) => {
 
         const cy = cyRef.current;
 
+        const highlightNode = (node: NodeSingular) => {
+            cy.elements().addClass('faded');
+            node.removeClass('faded').addClass('hovered');
+            node.neighborhood().removeClass('faded');
+        };
+
+        const clearHighlight = () => {
+            cy.elements().removeClass('faded hovered');
+        };
+
         cy.on('tap', 'node', (evt) => {
             const node = evt.target as NodeSingular;
-            setSelectedNode(node.data());
-
-            if (containerRef.current) {
-                const graphDiv = containerRef.current;
-                const panelWidth = 256; // Corresponds to w-64 class
-                const panelHeightEst = 180; // Estimated height
-
-                let pX = evt.renderedPosition.x + 20;
-                let pY = evt.renderedPosition.y - 20;
-
-                // Adjust position to keep panel within graph boundaries
-                if (pX + panelWidth > graphDiv.clientWidth) {
-                    pX = evt.renderedPosition.x - panelWidth - 20;
-                }
-                if (pY + panelHeightEst > graphDiv.clientHeight) {
-                    pY = graphDiv.clientHeight - panelHeightEst - 10;
-                }
-                if (pY < 10) { pY = 10; }
-                if (pX < 10) { pX = 10; }
-
-                setPanelPosition({ x: pX, y: pY });
+            const currentSelected = cy.$('node:selected');
+            
+            if (currentSelected.nonempty() && currentSelected.id() === node.id()) {
+                // Deselect if clicking the same node
+                node.unselect();
+                setSelectedNode(null);
+                clearHighlight();
             } else {
-                setPanelPosition({ x: evt.renderedPosition.x + 20, y: evt.renderedPosition.y - 20 });
+                setSelectedNode(node.data());
+                highlightNode(node);
+
+                if (containerRef.current) {
+                    const graphDiv = containerRef.current;
+                    const panelWidth = 256; // Corresponds to w-64 class
+                    const panelHeightEst = 180; // Estimated height
+
+                    let pX = evt.renderedPosition.x + 20;
+                    let pY = evt.renderedPosition.y - 20;
+
+                    if (pX + panelWidth > graphDiv.clientWidth) {
+                        pX = evt.renderedPosition.x - panelWidth - 20;
+                    }
+                    if (pY + panelHeightEst > graphDiv.clientHeight) {
+                        pY = graphDiv.clientHeight - panelHeightEst - 10;
+                    }
+                    if (pY < 10) { pY = 10; }
+                    if (pX < 10) { pX = 10; }
+
+                    setPanelPosition({ x: pX, y: pY });
+                } else {
+                    setPanelPosition({ x: evt.renderedPosition.x + 20, y: evt.renderedPosition.y - 20 });
+                }
             }
         });
         
         cy.on('tap', (evt) => {
             if(evt.target === cy) {
                 setSelectedNode(null);
+                cy.$('node:selected').unselect();
+                clearHighlight();
             }
         });
 
         cy.on('mouseover', 'node', (e) => {
-            const node = e.target;
-            cy.elements().addClass('faded');
-            node.removeClass('faded');
-            node.addClass('hovered');
-            node.neighborhood().removeClass('faded');
+            if (cy.$('node:selected').empty()) {
+                highlightNode(e.target);
+            }
         });
 
         cy.on('mouseout', 'node', () => {
-             cy.elements().removeClass('faded hovered');
+            if (cy.$('node:selected').empty()) {
+                clearHighlight();
+            }
         });
 
         cy.on('grab', 'node', (e) => {
@@ -252,7 +276,7 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links }) => {
     const handleFullscreenToggle = () => {
         const elem = graphWrapperRef.current;
         if (!elem) return;
-
+        
         if (!document.fullscreenElement) {
             elem.requestFullscreen().catch(err => {
                 console.error(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
@@ -260,9 +284,11 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links }) => {
         } else {
             document.exitFullscreen();
         }
+        setSelectedNode(null); // Deselect on fullscreen change
     };
 
     const handleRefreshLayout = () => {
+        setSelectedNode(null); // Deselect on layout refresh
         cyRef.current?.layout(layoutOptions).run();
     };
 
@@ -281,7 +307,11 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links }) => {
                 <button onClick={handleToggleLegend} className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark"><span className="material-symbols-outlined text-xl">legend_toggle</span></button>
             </div>
              {showLegend && <GraphLegend />}
-             {selectedNode && <NodeDetailsPanel node={selectedNode} position={panelPosition} onClose={() => setSelectedNode(null)} />}
+             {selectedNode && <NodeDetailsPanel node={selectedNode} position={panelPosition} onClose={() => {
+                setSelectedNode(null);
+                cyRef.current?.$('node:selected').unselect();
+                cyRef.current?.elements().removeClass('faded hovered');
+             }} />}
             <div ref={containerRef} className="w-full h-full" />
         </div>
     );
