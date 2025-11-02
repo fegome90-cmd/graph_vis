@@ -1,0 +1,5 @@
+{
+  "name": "Unified Development Command Post",
+  "description": "A web application to visualize the impact analysis of a pull request through an interactive dependency graph, based on a technical research report.",
+  "requestFramePermissions": []
+}
