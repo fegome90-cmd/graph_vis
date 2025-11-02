@@ -1,94 +1,146 @@
-
-
-import React, { useEffect, useRef, useState } from 'react';
-import cytoscape, { Core, NodeSingular, Position } from 'cytoscape';
-import { NodeData, LinkData, NodeType } from '../types';
+import React, { useEffect, useRef, useMemo, useState } from 'react';
+// Fix: Import StylesheetCSS instead of Stylesheet from cytoscape, as suggested by the error message.
+import cytoscape, { Core, EventObject, StylesheetCSS } from 'cytoscape';
+import { NodeData, LinkData } from '../types';
 
 interface ForceGraphProps {
     nodes: NodeData[];
     links: LinkData[];
+    selectedNodeId?: string | null;
+    onNodeClick?: (nodeId: string | null) => void;
 }
 
-const graphStyles: cytoscape.Stylesheet[] = [
+// --- Color and Style Constants ---
+const nodeHeaderBgColor = '#e2e8f0'; // slate-200
+const nodeBodyBgColor = '#f8fafc'; // slate-50
+const nodeBorderColor = '#cbd5e1'; // slate-300
+const nodeHotspotBorderColor = '#ef4444'; // red-500
+const selectedNodeBorderColor = '#4f46e5'; // indigo-600
+const nodeWidth = 160;
+const nodeHeight = 60;
+
+// --- Helper function to create SVG for nodes ---
+// This function now only creates the background, icon, and status bar, not the text label.
+const createNodeSvg = (node: NodeData): string => {
+    const { type, importance, isHotspot } = node;
+    const statusBarWidth = 6;
+    const headerHeight = 24;
+    const bodyHeight = nodeHeight - headerHeight;
+    const statusBarHeight = bodyHeight - 16;
+    const statusBarFillHeight = ((importance || 0) / 10) * statusBarHeight;
+    
+    // Color scale from green to yellow to red
+    const getColor = (value: number) => {
+        const h = (1 - value / 10) * 120;
+        return `hsl(${h}, 80%, 50%)`;
+    };
+    const statusBarColor = getColor(importance);
+
+    const iconPath = {
+        file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z M16 18H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z',
+        function: 'M12.4 5H18a2 2 0 0 1 2 2v2h-2V7h-5.6l2.3 2.3-1.4 1.4-4-4 4-4 1.4 1.4L12.4 5zM6 15h5.6l-2.3-2.3 1.4-1.4 4 4-4 4-1.4-1.4L11.6 19H6a2 2 0 0 1-2-2v-2h2v2z',
+        class: 'M6.1 14.6L1.5 12l4.6-2.6L8.5 12l-2.4 2.6zm11.8 0L22.5 12l-4.6-2.6L15.5 12l2.4 2.6zm-6.4-10.2L9.4 17.2l1.2 1.2 2.1-12.8-1.2-1.2z',
+    };
+
+    const hotspotIndicatorSvg = isHotspot
+        ? `<circle cx="${nodeWidth - 12}" cy="12" r="5" fill="${nodeHotspotBorderColor}" stroke="#fff" stroke-width="1.5" />`
+        : '';
+    
+    const svg = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="${nodeWidth}" height="${nodeHeight}">
+            <rect x="0" y="0" width="${nodeWidth}" height="${nodeHeight}" fill="${nodeBodyBgColor}" stroke="${isHotspot ? nodeHotspotBorderColor : 'none'}" stroke-width="${isHotspot ? 2 : 0}" rx="8" ry="8"/>
+            <path d="M 0 8 a 8 8 0 0 1 8 -8 h ${nodeWidth - 16} a 8 8 0 0 1 8 8 v ${headerHeight - 8} H 0 Z" fill="${nodeHeaderBgColor}" />
+            <rect x="0" y="${headerHeight}" width="${nodeWidth}" height="1" fill="${nodeBorderColor}"/>
+            <g transform="translate(8, 5)">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="#475569">
+                    <path d="${iconPath[type]}"></path>
+                </svg>
+            </g>
+            
+            <rect x="8" y="${headerHeight + 8}" width="${statusBarWidth}" height="${statusBarHeight}" fill="#e2e8f0" rx="3" ry="3"/>
+            <rect x="8" y="${headerHeight + 8 + (statusBarHeight - statusBarFillHeight)}" width="${statusBarWidth}" height="${statusBarFillHeight}" fill="${statusBarColor}" rx="3" ry="3"/>
+
+            ${hotspotIndicatorSvg}
+        </svg>
+    `;
+
+    return `data:image/svg+xml;base64,${btoa(svg)}`;
+};
+
+// A stylesheet is an array of style rules.
+// Fix: Use StylesheetCSS[] as the type for the styles array.
+const graphStyles: StylesheetCSS[] = [
     {
         selector: 'node',
         style: {
-            'shape': 'data(shape)',
-            'width': 'data(width)',
-            'height': 'data(height)',
-            'background-color': 'data(color)',
-            'label': 'data(label)',
-            'color': '#ffffff',
-            'font-size': '10px',
-            'font-weight': 'bold',
+            'shape': 'rectangle',
+            'background-color': 'transparent',
+            'background-image': 'data(svg)',
+            'border-width': 2,
+            'border-color': 'transparent',
+            'width': nodeWidth,
+            'height': nodeHeight,
+            // Label styles
+            'label': 'data(name)',
             'text-valign': 'center',
             'text-halign': 'center',
-            'transition-property': 'transform, box-shadow, shadow-blur, shadow-opacity, border-width, border-color, border-opacity',
+            'text-margin-x': 11,
+            'text-margin-y': -16,
+            'font-family': 'Space Grotesk, sans-serif',
+            'font-size': '12px',
+            'font-weight': '600',
+            'color': '#1e293b',
+            'text-max-width': 110,
+            'text-overflow': 'ellipsis',
+            'text-wrap': 'none',
+            // Use compatible properties for transitions
+            'transition-property': 'width, height, overlay-opacity, overlay-padding, border-color',
             'transition-duration': '0.2s',
+            'overlay-color': selectedNodeBorderColor,
+            'overlay-opacity': 0,
+            'overlay-padding': 0,
         },
-    },
-    {
-        selector: 'node[type="FILE"]',
-        style: { 'background-color': '#135bec', 'width': 70, 'height': 40, 'shape': 'round-rectangle' },
-    },
-    {
-        selector: 'node[type="CLASS"]',
-        style: { 'background-color': '#8b5cf6', 'width': 50, 'height': 50, 'shape': 'diamond' },
-    },
-    {
-        selector: 'node[type="FUNCTION"]',
-        style: { 'background-color': '#14b8a6', 'width': 48, 'height': 48, 'shape': 'ellipse' },
-    },
-    {
-        selector: 'node[type="HOTSPOT"]',
-        style: { 'background-color': '#ef4444', 'width': 60, 'height': 60, 'shape': 'ellipse' },
     },
     {
         selector: 'edge',
         style: {
-            'width': 1.5,
-            'line-color': 'data(color)',
+            'width': 2.5,
+            'line-color': '#94a3b8',
             'target-arrow-shape': 'triangle',
-            'target-arrow-color': 'data(color)',
+            'target-arrow-color': '#94a3b8',
             'curve-style': 'bezier',
+            'opacity': 0.7,
             'transition-property': 'opacity',
-            'transition-duration': '0.3s',
+            'transition-duration': '0.2s',
         },
-    },
-     {
-        selector: 'edge[type="import"]',
-        style: { 'line-color': '#38bdf8', 'target-arrow-color': '#38bdf8' },
-    },
-    {
-        selector: 'edge[type="call"]',
-        style: { 'line-color': '#fbbf24', 'target-arrow-color': '#fbbf24' },
     },
     {
         selector: 'node:selected',
         style: {
+            'border-color': selectedNodeBorderColor,
             'border-width': 4,
-            'border-color': '#ffffff',
-            'border-opacity': 0.8,
         }
     },
     {
         selector: '.hovered',
         style: {
-            'transform': 'scale(1.15)',
-            'shadow-color': '#ffffff',
-            'shadow-opacity': 0.9,
-            'shadow-blur': 25,
+            // Animate width and height for scaling effect
+            'width': nodeWidth * 1.05,
+            'height': nodeHeight * 1.05,
+            // Add a subtle glow effect
+            'overlay-opacity': 0.2,
+            'overlay-padding': 8,
         }
     },
     {
         selector: '.grabbed',
         style: {
-            'shadow-color': '#135bec',
-            'shadow-opacity': 0.5,
-            'shadow-blur': 30,
-            'shadow-offset-y': 20,
-            'transform': 'scale(1.2)',
-            'z-index': 999,
+             // Animate width and height for scaling effect
+            'width': nodeWidth * 1.1,
+            'height': nodeHeight * 1.1,
+            // Use overlay for a stronger glow/shadow effect
+            'overlay-opacity': 0.5,
+            'overlay-padding': 15,
         }
     },
     {
@@ -97,221 +149,248 @@ const graphStyles: cytoscape.Stylesheet[] = [
             'opacity': 0.2,
         }
     },
+     {
+        selector: 'node[?isHotspot]',
+        style: {
+            'border-color': nodeHotspotBorderColor,
+        },
+    },
 ];
-
 
 const GraphLegend: React.FC = () => (
     <div className="absolute bottom-4 left-4 z-10">
         <div className="p-4 rounded-xl border border-white/10 bg-background-dark/80 backdrop-blur-sm text-white shadow-lg w-64">
             <h4 className="font-bold mb-3 text-base">Graph Legend</h4>
-            <div className="flex flex-col gap-2 text-sm">
-                <h5 className="text-xs font-bold uppercase text-white/50 mt-2 mb-1">Node Types</h5>
-                <div className="flex items-center gap-2"><svg className="w-4 h-4" viewBox="0 0 100 100"><rect fill="#135bec" stroke="#60a5fa" height="80" strokeWidth="5" width="80" x="10" y="10" rx="10"></rect></svg><span>File</span></div>
-                <div className="flex items-center gap-2"><svg className="w-4 h-4" viewBox="0 0 100 100"><path fill="#8b5cf6" stroke="#a78bfa" d="M50 0 L100 50 L50 100 L0 50 Z" strokeWidth="5"></path></svg><span>Class</span></div>
-                <div className="flex items-center gap-2"><svg className="w-4 h-4" viewBox="0 0 100 100"><circle fill="#14b8a6" stroke="#5eead4" cx="50" cy="50" r="45" strokeWidth="5"></circle></svg><span>Function</span></div>
-                <div className="flex items-center gap-2"><svg className="w-4 h-4" viewBox="0 0 100 100"><circle fill="#ef4444" stroke="#f87171" cx="50" cy="50" r="45" strokeWidth="5"></circle></svg><span>Hotspot</span></div>
-                <h5 className="text-xs font-bold uppercase text-white/50 mt-3 mb-1">Relation Types</h5>
-                <div className="flex items-center gap-2"><svg className="w-4 h-2" viewBox="0 0 20 2"><line stroke="#38bdf8" strokeWidth="3" x1="0" x2="20" y1="1" y2="1"></line></svg><span>Import</span></div>
-                <div className="flex items-center gap-2"><svg className="w-4 h-2" viewBox="0 0 20 2"><line stroke="#fbbf24" strokeWidth="3" x1="0" x2="20" y1="1" y2="1"></line></svg><span>Call</span></div>
+            <div className="flex flex-col gap-3 text-sm">
+                <div className="flex items-center gap-3">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"></path></svg>
+                    <span>File</span>
+                </div>
+                 <div className="flex items-center gap-3">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M6.1 14.6L1.5 12l4.6-2.6L8.5 12l-2.4 2.6zm11.8 0L22.5 12l-4.6-2.6L15.5 12l2.4 2.6zm-6.4-10.2L9.4 17.2l1.2 1.2 2.1-12.8-1.2-1.2z"></path></svg>
+                    <span>Class</span>
+                </div>
+                 <div className="flex items-center gap-3">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M12.4 5H18a2 2 0 0 1 2 2v2h-2V7h-5.6l2.3 2.3-1.4 1.4-4-4 4-4 1.4 1.4L12.4 5zM6 15h5.6l-2.3-2.3 1.4-1.4 4 4-4 4-1.4-1.4L11.6 19H6a2 2 0 0 1-2-2v-2h2v2z"></path></svg>
+                    <span>Function</span>
+                </div>
+                 <div className="flex items-center gap-3">
+                    <div className="w-4 h-4 rounded-full border-2 border-red-500 bg-red-500/50"></div>
+                    <span>Hotspot</span>
+                </div>
+                 <div className="flex items-center gap-2">
+                    <div className="h-4 w-1 bg-gradient-to-t from-green-500 to-red-500 rounded-full"></div>
+                    <span className="text-xs">Importance</span>
+                </div>
             </div>
         </div>
     </div>
 );
 
-const NodeDetailsPanel: React.FC<{ node: NodeData, position: Position, onClose: () => void }> = ({ node, position, onClose }) => (
+const NodeDetailsPanel: React.FC<{ node: NodeData, onClose: () => void }> = ({ node, onClose }) => {
+    return (
     <div 
-        className="absolute z-20 w-64 rounded-xl border border-white/10 bg-background-dark/80 shadow-2xl backdrop-blur-sm"
-        style={{ left: position.x, top: position.y }}
+        className="absolute z-20 w-80 rounded-xl border border-white/10 bg-background-dark/80 shadow-2xl backdrop-blur-sm top-4 left-4"
     >
         <div className="p-4">
             <div className="flex justify-between items-start">
                 <div>
-                    <h3 className="font-bold text-white">{node.label}</h3>
-                    <p className="text-sm text-white/70">{node.type}</p>
+                    <h3 className="font-bold text-white text-lg">{node.name}</h3>
+                    <p className="text-sm text-white/70 capitalize">{node.type}</p>
                 </div>
                 <button onClick={onClose} className="text-white/70 hover:text-white text-2xl leading-none">&times;</button>
             </div>
-            <p className="mt-2 text-sm text-white/80">{node.details}</p>
-            <div className="mt-4 flex flex-col gap-2">
-                <button className="flex w-full items-center justify-center gap-2 rounded-md bg-primary py-2 text-sm font-medium text-white hover:bg-primary/90">
-                    <span className="material-symbols-outlined text-base">code</span>
-                    <span>View Code</span>
-                </button>
-                <button className="flex w-full items-center justify-center gap-2 rounded-md bg-white/10 py-2 text-sm font-medium text-white/90 hover:bg-white/20">
-                    <span className="material-symbols-outlined text-base">filter_alt</span>
-                    <span>Filter by File</span>
-                </button>
+             <div className="mt-3 text-sm text-white/80 space-y-1">
+                <p><span className="font-bold">Importance:</span> {node.importance}</p>
+                {node.isHotspot && <p className="font-bold text-red-400">This is a hotspot!</p>}
             </div>
         </div>
     </div>
-);
+)};
 
-
-export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links }) => {
+export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links, selectedNodeId, onNodeClick }) => {
     const containerRef = useRef<HTMLDivElement>(null);
-    const graphWrapperRef = useRef<HTMLDivElement>(null);
     const cyRef = useRef<Core | null>(null);
-    const [selectedNode, setSelectedNode] = useState<NodeData | null>(null);
-    const [panelPosition, setPanelPosition] = useState<Position>({x: 0, y: 0});
+    const [isLegendVisible, setIsLegendVisible] = useState(true);
     const [isFullscreen, setIsFullscreen] = useState(false);
-    const [showLegend, setShowLegend] = useState(true);
 
-    const layoutOptions = {
+    // Ref to hold the latest props, preventing stale closures in event handlers.
+    const propsRef = useRef({ onNodeClick, selectedNodeId });
+    propsRef.current = { onNodeClick, selectedNodeId };
+    
+    const elements = useMemo(() => {
+        return {
+            nodes: nodes.map(node => ({
+                data: { ...node, svg: createNodeSvg(node) }
+            })),
+            edges: links.map(link => ({ data: { ...link } }))
+        };
+    }, [nodes, links]);
+
+    const layoutConfig = useMemo(() => ({
         name: 'cose',
-        animate: true,
-        padding: 50,
-        nodeRepulsion: () => 40000,
-        idealEdgeLength: () => 250,
-        nodeOverlap: 20,
-        gravity: 80,
-        animationDuration: 500,
+        animate: 'end' as const,
+        padding: 100,
+        // Adjust forces for better stability and less overlap
+        nodeRepulsion: () => 4000,
+        idealEdgeLength: () => 180,
+        nodeOverlap: 25,
+        gravity: 40,
+        // Fine-tuning parameters for a smoother layout
+        numIter: 1000,
+        initialTemp: 200,
+        coolingFactor: 0.95,
+        minTemp: 1.0
+    }), []);
+
+    const handleRefresh = () => {
+        const cy = cyRef.current;
+        if (!cy) return;
+        cy.layout(layoutConfig).run();
     };
 
+    const handleToggleFullscreen = () => {
+        setIsFullscreen(!isFullscreen);
+    };
+    
+    const handleToggleLegend = () => {
+        setIsLegendVisible(!isLegendVisible);
+    };
+
+    // Effect for initializing and destroying the graph
     useEffect(() => {
         if (!containerRef.current) return;
 
-        const elements = [
-            ...nodes.map(node => ({ data: { ...node } })),
-            ...links.map(link => ({ data: { ...link } })),
-        ];
-
-        cyRef.current = cytoscape({
+        const cy = cytoscape({
             container: containerRef.current,
             elements: elements,
             style: graphStyles,
-            layout: layoutOptions,
+            layout: layoutConfig,
+            boxSelectionEnabled: false,
         });
-
-        const cy = cyRef.current;
-
-        const highlightNode = (node: NodeSingular) => {
-            cy.elements().addClass('faded');
-            node.removeClass('faded').addClass('hovered');
-            node.neighborhood().removeClass('faded');
-        };
-
-        const clearHighlight = () => {
-            cy.elements().removeClass('faded hovered');
-        };
-
-        cy.on('tap', 'node', (evt) => {
-            const node = evt.target as NodeSingular;
-            const currentSelected = cy.$('node:selected');
-            
-            if (currentSelected.nonempty() && currentSelected.id() === node.id()) {
-                // Deselect if clicking the same node
-                node.unselect();
-                setSelectedNode(null);
-                clearHighlight();
-            } else {
-                setSelectedNode(node.data());
-                highlightNode(node);
-
-                if (containerRef.current) {
-                    const graphDiv = containerRef.current;
-                    const panelWidth = 256; // Corresponds to w-64 class
-                    const panelHeightEst = 180; // Estimated height
-
-                    let pX = evt.renderedPosition.x + 20;
-                    let pY = evt.renderedPosition.y - 20;
-
-                    if (pX + panelWidth > graphDiv.clientWidth) {
-                        pX = evt.renderedPosition.x - panelWidth - 20;
-                    }
-                    if (pY + panelHeightEst > graphDiv.clientHeight) {
-                        pY = graphDiv.clientHeight - panelHeightEst - 10;
-                    }
-                    if (pY < 10) { pY = 10; }
-                    if (pX < 10) { pX = 10; }
-
-                    setPanelPosition({ x: pX, y: pY });
-                } else {
-                    setPanelPosition({ x: evt.renderedPosition.x + 20, y: evt.renderedPosition.y - 20 });
-                }
-            }
-        });
+        cyRef.current = cy;
         
-        cy.on('tap', (evt) => {
-            if(evt.target === cy) {
-                setSelectedNode(null);
-                cy.$('node:selected').unselect();
-                clearHighlight();
-            }
-        });
-
-        cy.on('mouseover', 'node', (e) => {
-            if (cy.$('node:selected').empty()) {
-                highlightNode(e.target);
-            }
-        });
-
-        cy.on('mouseout', 'node', () => {
-            if (cy.$('node:selected').empty()) {
-                clearHighlight();
-            }
-        });
-
-        cy.on('grab', 'node', (e) => {
-            e.target.addClass('grabbed');
-        });
-
-        cy.on('free', 'node', (e) => {
-            e.target.removeClass('grabbed');
-        });
-
         return () => {
             cy.destroy();
-        };
-
-    }, [nodes, links]);
-
-    useEffect(() => {
-        const handleFullscreenChange = () => {
-            setIsFullscreen(!!document.fullscreenElement);
-        };
-        document.addEventListener('fullscreenchange', handleFullscreenChange);
-        return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-    }, []);
-
-    const handleFullscreenToggle = () => {
-        const elem = graphWrapperRef.current;
-        if (!elem) return;
-        
-        if (!document.fullscreenElement) {
-            elem.requestFullscreen().catch(err => {
-                console.error(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
-            });
-        } else {
-            document.exitFullscreen();
+            cyRef.current = null;
         }
-        setSelectedNode(null); // Deselect on fullscreen change
-    };
+    }, [elements, layoutConfig]);
 
-    const handleRefreshLayout = () => {
-        setSelectedNode(null); // Deselect on layout refresh
-        cyRef.current?.layout(layoutOptions).run();
-    };
+    // Effect for handling events, runs only once on mount
+    useEffect(() => {
+        const cy = cyRef.current;
+        if (!cy) return;
 
-    const handleToggleLegend = () => {
-        setShowLegend(prev => !prev);
-    };
+        const handleNodeTap = (evt: EventObject) => {
+            const nodeId = evt.target.id();
+            const { onNodeClick: currentOnNodeClick, selectedNodeId: currentSelectedNodeId } = propsRef.current;
+            currentOnNodeClick?.(currentSelectedNodeId === nodeId ? null : nodeId);
+        };
+        const handleBackgroundTap = (evt: EventObject) => {
+            if(evt.target === cy) {
+                 const { onNodeClick: currentOnNodeClick } = propsRef.current;
+                 currentOnNodeClick?.(null);
+            }
+        };
+        const handleMouseOver = (e: EventObject) => {
+            const { selectedNodeId: currentSelectedNodeId } = propsRef.current;
+            if (!currentSelectedNodeId) {
+                cy.elements().addClass('faded');
+                e.target.removeClass('faded').addClass('hovered');
+                e.target.neighborhood().removeClass('faded');
+            }
+            if (e.target.isNode()) {
+                 (cy.container() as HTMLElement).style.cursor = 'pointer';
+            }
+        };
+        const handleMouseOut = (e: EventObject) => {
+            const { selectedNodeId: currentSelectedNodeId } = propsRef.current;
+            if (!currentSelectedNodeId) {
+                cy.elements().removeClass('faded hovered');
+            }
+            (cy.container() as HTMLElement).style.cursor = 'default';
+        };
+        const handleGrab = (e: EventObject) => e.target.addClass('grabbed');
+        const handleFree = (e: EventObject) => e.target.removeClass('grabbed');
 
+        cy.on('tap', 'node', handleNodeTap);
+        cy.on('tap', handleBackgroundTap);
+        cy.on('mouseover', 'node', handleMouseOver);
+        cy.on('mouseout', 'node', handleMouseOut);
+        cy.on('grab', 'node', handleGrab);
+        cy.on('free', 'node', handleFree);
+
+        return () => {
+            cy.off('tap', 'node', handleNodeTap);
+            cy.off('tap', handleBackgroundTap);
+            cy.off('mouseover', 'node', handleMouseOver);
+            cy.off('mouseout', 'node', handleMouseOut);
+            cy.off('grab', 'node', handleGrab);
+            cy.off('free', 'node', handleFree);
+        }
+    }, []); // Empty dependency array ensures this runs only once
+
+
+    // Effect for syncing selection and focus state from props
+    useEffect(() => {
+        const cy = cyRef.current;
+        if (!cy) return;
+
+        // Clear previous selections and styles
+        cy.$('node:selected').unselect();
+        cy.elements().removeClass('faded hovered');
+
+        if (selectedNodeId) {
+            const nodeToSelect = cy.$id(selectedNodeId);
+            if(nodeToSelect.length > 0) {
+                nodeToSelect.select();
+                
+                // Apply focus effect
+                cy.elements().addClass('faded');
+                nodeToSelect.removeClass('faded');
+                nodeToSelect.neighborhood().removeClass('faded');
+            }
+        }
+    }, [selectedNodeId]);
+
+    // Effect for handling resize on fullscreen toggle
+    useEffect(() => {
+        const cy = cyRef.current;
+        if (cy) {
+            const resizeTimeout = setTimeout(() => {
+                cy.resize();
+                cy.fit(undefined, 50); // Fit with padding
+            }, 100); 
+
+            return () => clearTimeout(resizeTimeout);
+        }
+    }, [isFullscreen]);
+
+
+    const nodeForPanel = useMemo(() => {
+        if (!selectedNodeId) return null;
+        return nodes.find(n => n.id === selectedNodeId) ?? null;
+    }, [selectedNodeId, nodes]);
+
+    const containerClasses = `w-full h-full relative bg-zinc-100 dark:bg-black/40 rounded-xl overflow-hidden transition-all duration-300 ${
+        isFullscreen ? 'fixed inset-0 z-50 !rounded-none' : ''
+    }`;
 
     return (
-        <div ref={graphWrapperRef} className="w-full h-full relative bg-zinc-100 dark:bg-black/40 rounded-xl overflow-hidden">
-            <div className="absolute top-4 right-4 flex flex-col gap-2 z-10">
-                <button onClick={handleFullscreenToggle} className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark">
+        <div className={containerClasses}>
+             <div className="absolute top-4 right-4 flex flex-col gap-2 z-10">
+                <button onClick={handleToggleFullscreen} className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark">
                     <span className="material-symbols-outlined text-xl">{isFullscreen ? 'fullscreen_exit' : 'fullscreen'}</span>
                 </button>
-                <button onClick={handleRefreshLayout} className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark"><span className="material-symbols-outlined text-xl">refresh</span></button>
-                <button onClick={handleToggleLegend} className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark"><span className="material-symbols-outlined text-xl">legend_toggle</span></button>
+                <button onClick={handleRefresh} className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark">
+                    <span className="material-symbols-outlined text-xl">refresh</span>
+                </button>
+                <button onClick={handleToggleLegend} className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark">
+                    <span className="material-symbols-outlined text-xl">legend_toggle</span>
+                </button>
             </div>
-             {showLegend && <GraphLegend />}
-             {selectedNode && <NodeDetailsPanel node={selectedNode} position={panelPosition} onClose={() => {
-                setSelectedNode(null);
-                cyRef.current?.$('node:selected').unselect();
-                cyRef.current?.elements().removeClass('faded hovered');
-             }} />}
+             {isLegendVisible && <GraphLegend />}
+             {nodeForPanel && <NodeDetailsPanel node={nodeForPanel} onClose={() => onNodeClick?.(null)} />}
             <div ref={containerRef} className="w-full h-full" />
         </div>
     );

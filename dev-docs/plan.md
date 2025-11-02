@@ -1,234 +1,73 @@
-## 2. PLAN.MD - ARQUITECTURA DETALLADA
+# PLAN DE DESARROLLO - ARQUITECTURA DETALLADA
 
-### Diagrama Arquitectura Multibase
+## Alcance MVP: Visualización de Grafo de Dependencias del Sistema
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│              CAPA APLICACIÓN (Node.js + Express)             │
-│  GraphQL API │ REST API │ WebSocket Server (real-time)      │
-└──────────────┬──────────────┬────────────────────────────────┘
-               │              │                ↓
-   ┌───────────┴───┐  ┌───────┴──────┐  ┌─────────────────┐
-   │ PostgreSQL 16 │  │ Git Mining   │  │  ClickHouse     │
-   │     (OLTP)    │  │   Service    │  │    (OLAP)       │
-   │               │  │              │  │                 │
-   │ • users       │  │ • simple-git │  │ • traces        │
-   │ • projects    │  │ • commits    │  │ • metrics       │
-   │ • tasks       │  │ • hotspots   │  │ • logs          │
-   │ • task_commits│  │ • cache PG   │  │ • high-card     │
-   │               │  │              │  │                 │
-   │ ACID, joins   │  │ Batch+cache  │  │ Columnar, TTL   │
-   └───────────────┘  └──────────────┘  └─────────────────┘
-         ↑                  ↑                    ↑
-         └──────────────────┴────────────────────┘
-              Event Streaming (Debezium + Kafka)
+**Filosofía**: Un solo "killer feature" ejecutado excelentemente → Facilitar el análisis de impacto y la comprensión de la arquitectura.
 
-┌─────────────────────────────────────────────────────────────┐
-│                   INTEGRACIONES EXTERNAS                     │
-│  Jira API │ GitHub/GitLab API │ OTel Collector (apps)       │
-└─────────────────────────────────────────────────────────────┘
-```
+---
 
-### ADRs (Architectural Decision Records)
+### Feature 1: Visualización de Grafo de Dependencias Estilo "Flowise"
 
-#### ADR-001: Arquitectura Multibase vs Monolítica
+**User story**: “Como desarrollador, quiero ver un mapa visual de los componentes de mi sistema y sus dependencias para poder entender rápidamente el impacto de mis cambios e identificar áreas de riesgo (hotspots).”
 
-**Status**: Aceptado | **Fecha**: 2025-11
+**Criterios de aceptación:**
 
-**Contexto**: Tres workloads distintos incompatibles con DB única:
+*   **[HECHO]** El grafo renderiza nodos y enlaces a partir de un conjunto de datos estático.
+*   **[HECHO]** Los nodos tienen un diseño estilo "Flowise" con una cabecera (icono + nombre) y un cuerpo.
+*   **[HECHO]** Los nodos muestran una "barra de estado de importancia" vertical cuyo color y altura cambian dinámicamente.
+*   **[HECHO]** Los nodos identificados como "hotspots" muestran un borde rojo y un indicador de alerta parpadeante.
+*   **[HECHO]** El grafo es interactivo: se puede hacer zoom, pan y arrastrar nodos.
+*   **[HECHO]** Al pasar el ratón sobre un nodo, este se resalta junto con sus vecinos directos, atenuando el resto del grafo.
+*   **[HECHO]** Al hacer clic en un nodo, su estado de selección persiste y sus detalles se muestran en una barra lateral.
+*   **[HECHO]** Una leyenda clara explica el significado de los diferentes tipos de nodos, el indicador de hotspot y la barra de importancia.
 
-- OLTP transaccional (usuarios, permisos) → requiere ACID
-- Análisis histórico Git (agregaciones complejas) → requiere OLAP
-- Time-series observabilidad (millones eventos/día) → requiere compresión columnar  
+**Stack Técnico:**
 
-**Decisión**: Polyglot persistence
+*   **Frontend:** React con TypeScript
+*   **Visualización de Grafo:** Cytoscape.js
+*   **Estilos:** Tailwind CSS
+*   **Componentes UI:** Componentes personalizados inspirados en Shadcn/UI
 
-- **PostgreSQL**: Planning, usuarios, OLTP (4-16GB RAM)  
-- **Git Mining Service**: Cache PostgreSQL + procesamiento on-demand simple-git
-- **ClickHouse**: Telemetría, logs, métricas (8-32GB RAM) 
-
-**Consecuencias**:
-
-✅ **Positivas:**
-
-- Performance óptima por dominio (5-100x mejoras documentadas) 
-- PostgreSQL: ACID, foreign keys, transacciones OLTP 
-- ClickHouse: Compresión 12-19x, queries 5-20x más rápidas 
-- Escalado horizontal independiente 
-- Costos: ClickHouse ~70% más económico que Elasticsearch 
-
-❌ **Negativas:**
-
-- Complejidad ops: 3 sistemas (monitoring, backups)
-- Joins cross-DB en app layer (GraphQL resolvers)
-- Consistencia eventual (CDC con Debezium) 
-- Curva aprendizaje múltiple
-
-**Mitigaciones:**
-
-- Managed services (RDS, ClickHouse Cloud) reducen ops 80%  
-- GraphQL abstrae complejidad
-- CDC desde día 1 (battle-tested: Uber, Netflix)
-- Documentación ownership claro
-
-**Referencias**: GitLab “Two Sizes Fit Most”, HyperDX migration blog, ClickHouse benchmarks 2024 
-
-#### ADR-002: ClickHouse vs Elasticsearch para Telemetría
-
-**Status**: Aceptado
-
-**Comparativa benchmarked:**
-
-|Métrica                     |ClickHouse     |Elasticsearch   |Ratio               |
-|----------------------------|---------------|----------------|--------------------|
-|Query aggregation 10B filas |6.6s           |33s             |**5x más rápido**   |
-|Compresión (10B filas)      |42GB           |513GB           |**12x mejor**       |
-|Write throughput            |2.2M/s         |330K-1.2M/s     |**2-7x superior**   |
-|High cardinality (4M series)|Sin degradación|-72% performance|**Crítico**         |
-|Storage cost AWS            |~$0.02/GB/mes  |~$0.15/GB/mes   |**7x más económico**|
-
-**Decisión**: ClickHouse para telemetría
-
-**Rationale:**
-
-1. Performance 5-20x en agregaciones (workload dominante) 
-1. Infraestructura 30-70% más barata (Cloudflare case study) 
-1. SQL familiar vs Elasticsearch DSL 
-1. Proven at scale: Uber (exabytes), Cloudflare, MessageBird 
-
-**Consecuencias:**
-
-- ✅ Queries subsegundo en billones filas
-- ✅ Retención ilimitada económica (S3 cold) 
-- ⚠️ Full-text search no óptimo (usar ngram/bloom filters)
-- ⚠️ Inserts batch obligatorios (OTel Collector maneja)
-
-#### ADR-003: simple-git + escomplex vs nodegit vs PyDriller
-
-**Decisión**: simple-git para MVP, PyDriller V2 opcional
-
-**Rationale MVP:**
-
-- simple-git: 5.9M downloads/semana,   zero native deps, cross-platform 
-- nodegit: memory leaks documentados (Issue #766), compilation hell
-- PyDriller: requiere Python runtime  (complejidad deployment self-hosted)
-
-**Para análisis académico avanzado post-MVP**: PyDriller ofrece métricas integradas. 
-
-### Alcance MVP Mínimo Defendible
-
-**Filosofía**: Un solo killer feature ejecutado excelentemente → Adopción desarrolladores 
-
-#### Feature 1: Git GUI Superior con Integración Tickets ⭐
-
-**Criterios aceptación:**
-
-- [ ] Grafo commits hasta 100K en \u003c2s (p95)
-- [ ] Topología branches/merges interactiva (zoom, pan)
-- [ ] Click commit → mostrar ticket Jira inline 
-- [ ] Click ticket → ver todos commits vinculados
-- [ ] Filtros: autor, fechas, branch, ticket_id
-- [ ] Parsing automático: `PROJ-123`, `#456`, `fixes JIRA-789` 
-
-**Stack**: React + Cytoscape.js (Canvas), simple-git, PostgreSQL cache
-
-**User story**: “Como developer, quiero ver qué commits pertenecen a qué ticket sin cambiar herramienta, para entender cambios en contexto negocio.”
-
-#### Feature 2: Análisis Hotspots Básico
-
-**Criterios aceptación:**
-
-- [ ] Calcular churn: commits/archivo en 30/90/180 días
-- [ ] Score hotspot: churn × complejidad ciclomática
-- [ ] Visualización heatmap (ECharts) con drill-down
-- [ ] Export CSV top N hotspots
-- [ ] Alertas configurables: archivo \u003e threshold
-
-**User story**: “Como tech lead, quiero identificar archivos con churn excesivo para priorizar refactoring.”
-
-#### Feature 3: Vista Task→Commits
-
-**Criterios aceptación:**
-
-- [ ] Importar tasks Jira/Linear vía API
-- [ ] Timeline commits por task con files changed
-- [ ] Link GitHub/GitLab para diff completo
-- [ ] Badge: tasks con 0 commits (trabajo no iniciado)
-
-**User story**: “Como PM, quiero ver qué código se escribió para cada task, para verificar completitud.”
+---
 
 ### Features EXCLUIDOS MVP (V2)
 
-- ❌ OpenTelemetry/runtime traces (requiere infra ClickHouse)
-- ❌ Dynamic system maps (service discovery automático)
-- ❌ Code quality avanzada (SonarQube integration)
-- ❌ ML predictions
-- ❌ Multi-repo dependency graphs
+*   Integración con repositorios Git reales para análisis dinámico.
+*   Conexión con sistemas de tickets (Jira, Linear) para vincular tareas a componentes del grafo.
+*   Análisis de telemetría y trazas en tiempo de ejecución (OpenTelemetry).
+*   Cálculo automático de "churn" y complejidad ciclomática.
+*   Mapas de dependencias de sistema dinámicos (descubrimiento automático de servicios).
+*   Análisis de calidad de código avanzado (integración con SonarQube).
 
-**Rationale**: MVP 4 meses; V2 features +8-12 meses.
+**Rationale**: MVP enfocado en la excelencia de la visualización y la interacción con datos de muestra. La integración con sistemas externos se abordará en V2.
 
-### Roadmap V2 (Meses 4-12)
+---
 
-**Fase 1: Fundación Telemetría (M4-M6, 8-10 dev-weeks)**
+### Roadmap V2 (Post-MVP)
 
-- Deploy ClickHouse cluster 3-node 
-- OpenTelemetry Collector (batch, sampling) 
-- Instrumentación Node.js apps  
-- UI básica: Jaeger + ClickHouse backend
+*   **Fase 1: Motor de Análisis de Código Estático (M4-M6)**
+    *   **User Story**: "Como Tech Lead, quiero que la plataforma analice un repositorio Git para generar automáticamente el grafo de dependencias, para no depender de datos de muestra."
+    *   **Criterios de Aceptación**:
+        *   Un servicio de backend (Node.js) expone un endpoint para analizar un repositorio.
+        *   Utiliza `simple-git` para leer el historial de cambios (churn).
+        *   Utiliza un AST parser (ej. `@babel/parser`) para identificar dependencias (imports/exports).
+        *   Utiliza `escomplex` para calcular la complejidad ciclomática.
+        *   El endpoint devuelve una estructura `GraphData` que el frontend puede consumir.
+        *   Los resultados del análisis se cachean (ej. en PostgreSQL) para mejorar el rendimiento en análisis subsecuentes.
 
-**Fase 2: Task→Trace End-to-End (M7-M9, 10-12 dev-weeks)**
+*   **Fase 2: Integración con Tickets y Tareas (M7-M9)**
+    *   **User Story**: "Como desarrollador, quiero ver qué tickets de Jira están asociados a cada nodo del grafo, para entender el contexto de negocio de los cambios."
+    *   **Criterios de Aceptación**:
+        *   Implementar parsing de mensajes de commit para extraer IDs de tickets (ej. `PROJ-123`).
+        *   Conectar con la API de Jira para obtener detalles básicos del ticket (título, estado).
+        *   Los nodos en el grafo afectados por commits de un ticket muestran un "badge" de Jira.
+        *   El panel de detalles del nodo muestra la información del ticket vinculado.
+        *   Añadir un filtro en la UI para buscar por ID de ticket y resaltar los nodos correspondientes.
 
-- Baggage propagation: inject jira.ticket_id en traces 
-- Query: “Todas trazas para JIRA-123”
-- Métricas por task: p50/p95/p99 latency, error rate
-- Flamegraphs simplificados
-
-**Fase 3: Mapa Dinámico Sistema (M10-M12, 12-14 dev-weeks)**
-
-- Service discovery desde traces
-- Grafo dependencias runtime observado
-- Comparación: diseñado vs real
-- Change impact analysis
-
-### Estimación Esfuerzo Desarrollador
-
-**Metodología**: 3-point estimation + 20% buffer, 2 devs full-time
-
-|Componente        |Optimista |Likely      |Pesimista |Buffer 20% |
-|------------------|----------|------------|----------|-----------|
-|Infraestructura   |2 sem     |3 sem       |4 sem     |**3.6 sem**|
-|Git Mining Service|4 sem     |6 sem       |9 sem     |**7.2 sem**|
-|Git GUI Superior  |5 sem     |7 sem       |10 sem    |**8.4 sem**|
-|Análisis Hotspots |2 sem     |3 sem       |5 sem     |**3.6 sem**|
-|Vista Task→Commits|3 sem     |4 sem       |6 sem     |**4.8 sem**|
-|Testing & QA      |2 sem     |3 sem       |4 sem     |**3.6 sem**|
-|Documentación     |1 sem     |1.5 sem     |2 sem     |**1.8 sem**|
-|**TOTAL MVP**     |**19 sem**|**27.5 sem**|**40 sem**|**33 sem** |
-
-**Timeline MVP**: 33 developer-weeks = **16.5 semanas calendario** (2 devs) ≈ **4 meses**
-
-**V2**: 41 developer-weeks adicionales ≈ **5 meses** (total proyecto: 9 meses)
-
-### Costos Infraestructura Self-Hosted
-
-**Requisitos por usuarios:**
-
-|Componente         |10 Users               |25 Users                |50 Users                |
-|-------------------|-----------------------|------------------------|------------------------|
-|**Node.js App**    |2 vCPU, 4GB            |4 vCPU, 8GB             |8 vCPU, 16GB            |
-|**PostgreSQL**     |2 vCPU, 4GB, 50GB      |4 vCPU, 8GB, 100GB      |8 vCPU, 16GB, 250GB     |
-|**ClickHouse (V2)**|4 vCPU, 8GB, 100GB     |8 vCPU, 16GB, 250GB     |16 vCPU, 32GB, 500GB    |
-|**Redis**          |1 vCPU, 2GB            |2 vCPU, 4GB             |2 vCPU, 8GB             |
-|**TOTAL**          |**9 vCPU, 18GB, 170GB**|**18 vCPU, 36GB, 400GB**|**34 vCPU, 72GB, 850GB**|
-
-**Costos mensuales cloud:**
-
-|Usuarios|AWS   |GCP |On-Premise (amortizado)   |
-|--------|------|----|--------------------------|
-|10      |$228  |$166|$71 (break-even 22 meses) |
-|25      |$463  |$338|$142 (break-even 24 meses)|
-|50      |$1,024|$681|$283 (break-even 23 meses)|
-
-**Recomendación**: Cloud para MVP validación; on-premise si \u003e25 usuarios long-term.
-
------
+*   **Fase 3: Fundación de Telemetría (M10-M12)**
+    *   **User Story**: "Como SRE, quiero ver métricas de runtime (ej. latencia p99, tasa de errores) directamente en los nodos del grafo, para correlacionar problemas de producción con componentes específicos del código."
+    *   **Criterios de Aceptación**:
+        *   Desplegar un clúster de ClickHouse para analíticas de alto rendimiento.
+        *   Instrumentar una aplicación de muestra con OpenTelemetry para exportar trazas y métricas.
+        *   Crear un servicio que correlacione las trazas con los nodos del grafo (ej. a través de atributos semánticos).
+        *   El panel de detalles del nodo en la UI muestra un resumen de las métricas clave de OpenTelemetry.
