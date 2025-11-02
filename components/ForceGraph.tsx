@@ -23,7 +23,7 @@ const graphStyles: cytoscape.Stylesheet[] = [
             'font-weight': 'bold',
             'text-valign': 'center',
             'text-halign': 'center',
-            'transition-property': 'transform, box-shadow',
+            'transition-property': 'transform, box-shadow, shadow-blur, shadow-opacity',
             'transition-duration': '0.2s',
         },
     },
@@ -78,6 +78,17 @@ const graphStyles: cytoscape.Stylesheet[] = [
         }
     },
     {
+        selector: '.grabbed',
+        style: {
+            'shadow-color': '#135bec',
+            'shadow-opacity': 0.6,
+            'shadow-blur': 40,
+            'shadow-offset-y': 20,
+            'transform': 'scale(1.1)',
+            'z-index': 999,
+        }
+    },
+    {
         selector: '.faded',
         style: {
             'opacity': 0.2,
@@ -115,7 +126,7 @@ const NodeDetailsPanel: React.FC<{ node: NodeData, position: Position, onClose: 
                     <h3 className="font-bold text-white">{node.label}</h3>
                     <p className="text-sm text-white/70">{node.type}</p>
                 </div>
-                <button onClick={onClose} className="text-white/70 hover:text-white">&times;</button>
+                <button onClick={onClose} className="text-white/70 hover:text-white text-2xl leading-none">&times;</button>
             </div>
             <p className="mt-2 text-sm text-white/80">{node.details}</p>
             <div className="mt-4 flex flex-col gap-2">
@@ -135,9 +146,23 @@ const NodeDetailsPanel: React.FC<{ node: NodeData, position: Position, onClose: 
 
 export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links }) => {
     const containerRef = useRef<HTMLDivElement>(null);
+    const graphWrapperRef = useRef<HTMLDivElement>(null);
     const cyRef = useRef<Core | null>(null);
     const [selectedNode, setSelectedNode] = useState<NodeData | null>(null);
     const [panelPosition, setPanelPosition] = useState<Position>({x: 0, y: 0});
+    const [isFullscreen, setIsFullscreen] = useState(false);
+    const [showLegend, setShowLegend] = useState(true);
+
+    const layoutOptions = {
+        name: 'cose',
+        animate: true,
+        padding: 50,
+        nodeRepulsion: () => 40000,
+        idealEdgeLength: () => 250,
+        nodeOverlap: 20,
+        gravity: 80,
+        animationDuration: 500,
+    };
 
     useEffect(() => {
         if (!containerRef.current) return;
@@ -151,13 +176,7 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links }) => {
             container: containerRef.current,
             elements: elements,
             style: graphStyles,
-            layout: {
-                name: 'cose',
-                animate: true,
-                padding: 50,
-                nodeRepulsion: () => 400000,
-                idealEdgeLength: () => 120,
-            },
+            layout: layoutOptions,
         });
 
         const cy = cyRef.current;
@@ -165,7 +184,29 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links }) => {
         cy.on('tap', 'node', (evt) => {
             const node = evt.target as NodeSingular;
             setSelectedNode(node.data());
-            setPanelPosition({ x: evt.renderedPosition.x + 20, y: evt.renderedPosition.y - 20 });
+
+            if (containerRef.current) {
+                const graphDiv = containerRef.current;
+                const panelWidth = 256; // Corresponds to w-64 class
+                const panelHeightEst = 180; // Estimated height
+
+                let pX = evt.renderedPosition.x + 20;
+                let pY = evt.renderedPosition.y - 20;
+
+                // Adjust position to keep panel within graph boundaries
+                if (pX + panelWidth > graphDiv.clientWidth) {
+                    pX = evt.renderedPosition.x - panelWidth - 20;
+                }
+                if (pY + panelHeightEst > graphDiv.clientHeight) {
+                    pY = graphDiv.clientHeight - panelHeightEst - 10;
+                }
+                if (pY < 10) { pY = 10; }
+                if (pX < 10) { pX = 10; }
+
+                setPanelPosition({ x: pX, y: pY });
+            } else {
+                setPanelPosition({ x: evt.renderedPosition.x + 20, y: evt.renderedPosition.y - 20 });
+            }
         });
         
         cy.on('tap', (evt) => {
@@ -186,23 +227,62 @@ export const ForceGraph: React.FC<ForceGraphProps> = ({ nodes, links }) => {
              cy.elements().removeClass('faded hovered');
         });
 
+        cy.on('grab', 'node', (e) => {
+            e.target.addClass('grabbed');
+        });
+
+        cy.on('free', 'node', (e) => {
+            e.target.removeClass('grabbed');
+        });
+
         return () => {
             cy.destroy();
         };
 
     }, [nodes, links]);
 
+    useEffect(() => {
+        const handleFullscreenChange = () => {
+            setIsFullscreen(!!document.fullscreenElement);
+        };
+        document.addEventListener('fullscreenchange', handleFullscreenChange);
+        return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    }, []);
+
+    const handleFullscreenToggle = () => {
+        const elem = graphWrapperRef.current;
+        if (!elem) return;
+
+        if (!document.fullscreenElement) {
+            elem.requestFullscreen().catch(err => {
+                console.error(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
+            });
+        } else {
+            document.exitFullscreen();
+        }
+    };
+
+    const handleRefreshLayout = () => {
+        cyRef.current?.layout(layoutOptions).run();
+    };
+
+    const handleToggleLegend = () => {
+        setShowLegend(prev => !prev);
+    };
+
 
     return (
-        <div className="w-full h-full relative">
+        <div ref={graphWrapperRef} className="w-full h-full relative bg-zinc-100 dark:bg-black/40 rounded-xl overflow-hidden">
             <div className="absolute top-4 right-4 flex flex-col gap-2 z-10">
-                <button className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark"><span className="material-symbols-outlined text-xl">fullscreen</span></button>
-                <button className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark"><span className="material-symbols-outlined text-xl">refresh</span></button>
-                <button className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark"><span className="material-symbols-outlined text-xl">legend_toggle</span></button>
+                <button onClick={handleFullscreenToggle} className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark">
+                    <span className="material-symbols-outlined text-xl">{isFullscreen ? 'fullscreen_exit' : 'fullscreen'}</span>
+                </button>
+                <button onClick={handleRefreshLayout} className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark"><span className="material-symbols-outlined text-xl">refresh</span></button>
+                <button onClick={handleToggleLegend} className="flex h-10 w-10 cursor-pointer items-center justify-center overflow-hidden rounded-lg bg-background-dark/80 backdrop-blur-sm text-white hover:bg-background-dark"><span className="material-symbols-outlined text-xl">legend_toggle</span></button>
             </div>
-             <GraphLegend />
+             {showLegend && <GraphLegend />}
              {selectedNode && <NodeDetailsPanel node={selectedNode} position={panelPosition} onClose={() => setSelectedNode(null)} />}
-            <div ref={containerRef} className="w-full h-full bg-zinc-100 dark:bg-black/40 rounded-xl" />
+            <div ref={containerRef} className="w-full h-full" />
         </div>
     );
 };
